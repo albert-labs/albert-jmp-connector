@@ -1,3 +1,10 @@
+## [1.2] - 2025-11-07
+
+### Changed
+
+- Updated structure within add-in for .jsl code to be seperate files, as opposed ot running in the "Run this JSL" box. No code or feature changes.
+  - Allows for quicker and more transparent updates in the future. 
+
 ## [1.1] - 2025-11-06
 
 ### Added
