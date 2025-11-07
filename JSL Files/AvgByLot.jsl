@@ -1,0 +1,362 @@
+// Verify Email
+email_to_confirm = Global:usr_email;
+
+verify_email = New Window( "Confirm Email Address",
+	<<Type("Modal Dialog"),
+	<<Return Result,
+	confirm = Text Edit Box( email_to_confirm ,<<Set Width(400) ),
+	H List Box(
+		Button Box ("OK"),
+		Button Box ("Cancel")
+	)
+);
+
+// Stop if Cancel is clicked
+If (verify_email["button"] != 1,
+	Show( "User Cancelled Request - Email Verification" );
+	Stop()	
+	);
+
+If (verify_email["button"] == 1, 
+	email_confirmed = verify_email["confirm"]);
+confirmed_email = email_confirmed;
+
+PythonConnection = Python Connect();
+PythonConnection << Send(confirmed_email, Python Name("user_submitted_email"));
+
+// Run Python Script
+If (verify_email["button"] == 1, 
+	Python Submit File("$ADDIN_HOME(com.Albertinvent.myaddin)/AvgResultsByLot.py"));
+	
+// Split Horizontal Average Values: 
+
+Current Data Table() << New Script(
+	"Split Horizontal by Inv, Result, Param",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name;
+horizontalNewName = "Horizontal Avg View " || oldName;
+Current Data Table() << Split(
+	Split By( :Type, :"Name (Inventory, Result, Parameter)"n ),
+	Split( :Value ),
+	Group( :"Product / Formula ID"n, :"Product / Formula Name"n, :Lot Number ),
+	Output Table( "Horizontal View Avg Values" ),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+);
+Names Default To Here(1);
+
+// ***** Make sure we're on the right table *****
+dt = Data Table("Horizontal View Avg Values");  // <-- change if your table name differs
+
+// Row keys in the horizontal view
+keyID   = "Product / Formula ID";
+keyName = "Product / Formula Name";
+keyLot  = "Lot Number";
+
+idCol   = Column(dt, keyID);
+nameCol = Column(dt, keyName);
+lotCol  = Column(dt, keyLot);
+
+// ------- Robust "blank-ish" helpers (character friendly) -------
+TrimAll = Function( {s},
+    // trim both spaces and NBSPs
+    Regex( Char(s), "^[\\s\\x{00A0}]*(.*?)[\\s\\x{00A0}]*$", "\\1" )
+);
+
+BlankLike = Function( {v},
+    If( Is Missing(v),
+        1,
+        sl = Lowercase( TrimAll(v) );
+        (sl == "") | (sl == ".") | (sl == "-") | (sl == "—") | (sl == "na") | (sl == "n/a")
+    )
+);
+
+LotMissingLike = Function( {v},
+    If( Is Missing(v),
+        1,
+        sl = Lowercase( TrimAll(v) );
+        (sl == "") | (sl == "missing(lot number)") | (sl == "n/a") | (sl == "na") | (sl == ".") | (sl == "-")
+    )
+);
+
+// ------- Build list of *data* columns explicitly -------
+dataCols = {};
+For( c = 1, c <= N Col(dt), c++,
+    nm = Column(dt, c) << Get Name;
+    If( nm != keyID & nm != keyName & nm != keyLot,
+        Insert Into( dataCols, Column(dt, c) );
+    );
+);
+
+// Debug: how many data columns did we detect?
+Show( "data_cols", N Items(dataCols) );
+
+// Bail early if no data columns were found
+If( N Items(dataCols) == 0,
+    Throw("No data columns found – check the table name or key column names.")
+);
+
+// ------- Make (ID, Name) groups contiguous -------
+// make groups contiguous without showing the Sort UI
+sortObj = dt << Sort(
+    By( :"Product / Formula ID"n, :"Product / Formula Name"n ),
+    Order( Ascending, Ascending ),
+    Replace Table,
+    Private           // <- hides the Sort report window
+);
+
+// ------- Walk each (ID, Name) group and copy from donor to targets -------
+nr = N Row(dt);
+r  = 1;
+groups_seen  = 0;
+donors_used  = 0;
+cells_filled = 0;
+
+// If you want to test the pipeline, force overwriting (even if target not blank)
+// Set to 1 to force-copy; set to 0 for "only fill blanks"
+OVERWRITE_ALL = 0;
+
+While( r <= nr,
+    id0   = Char( idCol[r] );
+    name0 = Char( nameCol[r] );
+
+    // group bounds
+    gStart = r;
+    gEnd   = r;
+    While( gEnd <= nr
+        & ( Char(idCol[gEnd]) == id0 )
+        & ( Char(nameCol[gEnd]) == name0 ),
+        gEnd++;
+    );
+    gEnd = gEnd - 1;
+    groups_seen++;
+
+    // donor row = first row in group whose lot is "missing-like"
+    donor = .;
+    For( rr = gStart, rr <= gEnd, rr++,
+        If( LotMissingLike( lotCol[rr] ),
+            donor = rr; Break();
+        );
+    );
+
+    // If no missing-lot donor, fall back to the row with most non-blank data
+    If( Is Missing(donor),
+        bestCnt = -1; bestRow = .;
+        For( rr = gStart, rr <= gEnd, rr++,
+            nb = 0;
+            For( k = 1, k <= N Items(dataCols), k++,
+                If( !BlankLike( dataCols[k][rr] ), nb++ );
+            );
+            If( nb > bestCnt, bestCnt = nb; bestRow = rr );
+        );
+        If( bestCnt > 0, donor = bestRow );
+    );
+
+    If( Is Missing(donor),
+        r = gEnd + 1;  // nothing to do in this group
+        Continue();
+    );
+
+    donors_used++;
+
+    // Copy donor values into other rows (same group) with a *defined* lot
+    For( rr = gStart, rr <= gEnd, rr++,
+        If( rr != donor & !LotMissingLike( lotCol[rr] ),
+            For( k = 1, k <= N Items(dataCols), k++,
+                donorV = dataCols[k][donor];
+                If( !BlankLike(donorV),
+                    If( OVERWRITE_ALL | BlankLike( dataCols[k][rr] ),
+                        dataCols[k][rr] = donorV;
+                        cells_filled++;
+                    );
+                );
+            );
+        );
+    );
+
+    r = gEnd + 1;
+);
+
+
+// belt-and-suspenders: if a Sort report did open, close it
+
+// Final debug summary — these should be > 0 if copies occurred
+Show( "groups_seen", groups_seen, "donors_used", donors_used, "cells_filled", cells_filled );
+
+dt = Current Data Table();
+
+toDelete = dt << Get Rows Where(
+    Is Missing(:Lot Number)
+    | Lowercase( Trim White Space( Char(:Lot Number) ) ) == ""
+    | Lowercase( Trim White Space( Char(:Lot Number) ) ) == "missing(lot number)"
+    | Lowercase( Trim White Space( Char(:Lot Number) ) ) == "na"
+    | Lowercase( Trim White Space( Char(:Lot Number) ) ) == "n/a"
+    | Lowercase( Trim White Space( Char(:Lot Number) ) ) == "."
+    | Lowercase( Trim White Space( Char(:Lot Number) ) ) == "-"
+);
+
+If( N Items(toDelete) > 0,
+    dt << Delete Rows( toDelete );
+);
+
+Names Default To Here( 1 );
+dtLocal = Current Data Table();
+tableName = dtLocal << Get Name;
+For( c = 1, c <= N Col( dtLocal ), c++,
+	col = Column( dtLocal, c );
+	canConvert = 1;
+	For( r = 1, r <= N Row( dtLocal ), r++,
+		val = col[r];
+		If( val != "" & !Is Missing( val ),
+			numVal = Num( val );
+			If( Is Missing( numVal ),
+				canConvert = 0;
+				Break();
+			);
+		);
+	);
+	If( canConvert,
+		col << Data Type( Numeric ) << Set Modeling Type( Continuous )
+	);
+);
+);
+// Script for Vertical View, split By Formula
+Current Data Table() << New Script(
+	"Split Table by Formula - Vertical",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name;
+horizontalNewName = "Vertical Avg View " || oldName;
+Current Data Table() << Split(
+	Split By( :"Product / Formula ID"n, :"Product / Formula Name"n, :Lot Number ),
+	Split( :Value ),
+	Group( :Type, :"Name (Inventory, Result, Parameter)"n ),
+	Output Table( "Vertical View Avg Values" ),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+);
+Names Default To Here(1);
+
+// Work on the split output table
+dt = Current Data Table();
+
+// Row-level columns (not data columns)
+skipCols = {"Type", "Name (Inventory, Result, Parameter)"};
+
+// Is this a wide data column?
+IsDataCol = Function( {nm},
+	Loc(skipCols, nm) == 0
+);
+
+// Base (prefix) for a donor col: strip the trailing "Missing(Lot Number)" and trim
+BaseFromDonor = Function( {nm},
+	Trim White Space( Substitute(nm, "Missing(Lot Number)", "") )
+);
+
+// ✔ Fixed: treat regex match as boolean by comparing to ""
+// Lot code: one letter + digits + "-" + digits at the END of the name
+LooksLikeLotCol = Function( {nm},
+	(!Contains(nm, "Missing(Lot Number)")) &
+	(Regex Match(nm, "[A-Za-z][0-9]+-[0-9]+$") != "")
+);
+
+// Names and Type handle
+names = dt << Get Column Names("String");
+haveType = (Loc(names, "Type") > 0);
+If( haveType, colType = Column(dt, "Type") );
+
+// Iterate donor columns (those with "Missing(Lot Number)")
+For(i = 1, i <= N Items(names), i++,
+	donorName = names[i];
+	If( !IsDataCol(donorName) | !Contains(donorName, "Missing(Lot Number)"),
+		Continue();
+	);
+
+	donorCol = Column(dt, donorName);
+	base     = BaseFromDonor(donorName);
+
+	// Find siblings: same base + space + lot code
+	sibIdxs = {};
+	For(j = 1, j <= N Items(names), j++,
+		nm2 = names[j];
+		If( !IsDataCol(nm2), Continue() );
+		If( nm2 == donorName, Continue() );
+		If( Starts With(nm2, base || " ") & LooksLikeLotCol(nm2),
+			Insert Into(sibIdxs, j);
+		);
+	);
+
+	If( N Items(sibIdxs) == 0, Continue() );
+
+	// Row-wise copy for rows where Type contains ingredients / process design
+	For(r = 1, r <= N Row(dt), r++,
+		okType = 1;
+		If( haveType,
+			t = Lowercase( Char( colType[r] ) );
+			okType = Contains(t, "ingredients") | Contains(t, "process design");
+		);
+
+		If( okType,
+			dv = donorCol[r];
+			If( !Is Missing(dv) & (Trim White Space(Char(dv)) != ""),
+				For(k = 1, k <= N Items(sibIdxs), k++,
+					c  = Column(dt, sibIdxs[k]);
+					tv = c[r];
+					If( Is Missing(tv) | (Trim White Space(Char(tv)) == ""),
+						c[r] = dv;
+					);
+				);
+			);
+		);
+	);
+);
+// Hide all columns whose name contains "Missing(Lot Number)"
+names = dt << Get Column Names("String");
+missCols = {};
+
+For( i = 1, i <= N Items(names), i++,
+	nm = names[i];
+	If( Contains(nm, "Missing(Lot Number)"),
+		Insert Into( missCols, Column(dt, nm) );
+	);
+);
+
+// Hide them (works even if list is empty)
+If( N Items(missCols) > 0,
+	dt << Delete Columns( Eval List( missCols ) );
+);
+
+);
+
+// Create & Add Script for String -> Numeric Conversion
+Current Data Table() << New Script(
+"Convert Strings to Numeric",
+
+	Names Default To Here(1);
+
+        /* Get a reference to the table the script is attached to */
+        dtLocal = Current Data Table();
+        tableName = dtLocal << Get Name;
+
+        /* Loop through columns and convert character columns that are purely numeric */
+        For( c = 1, c <= N Col( dtLocal ), c++,
+            col = Column( dtLocal, c );
+            canConvert = 1;
+
+            For( r = 1, r <= N Row( dtLocal ), r++,
+                val = col[r];
+                If( (val != "") & !Is Missing(val),
+                    numVal = Num( val );
+                    If( Is Missing( numVal ),
+                        canConvert = 0;
+                        Break();
+                    );
+                );
+            );
+
+            If( canConvert,
+                col << Data Type( Numeric ) << Set Modeling Type( Continuous );
+				);
+        );
+ );

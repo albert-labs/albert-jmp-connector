@@ -1,0 +1,144 @@
+// Verify Email
+
+email_to_confirm = Global:usr_email;
+
+verify_email = New Window( "Confirm Email Address",
+	<<Type("Modal Dialog"),
+	<<Return Result,
+	confirm = Text Edit Box( email_to_confirm ,<<Set Width(400) ),
+	H List Box(
+		Button Box ("OK"),
+		Button Box ("Cancel")
+	)
+);
+
+// Stop if Cancel is clicked
+If (verify_email["button"] != 1,
+	Show( "User Cancelled Request" );
+	Stop()	
+	);
+
+If (verify_email["button"] == 1, 
+	email_confirmed = verify_email["confirm"]);
+confirmed_email = email_confirmed;
+
+PythonConnection = Python Connect();
+PythonConnection << Send(confirmed_email, Python Name("user_submitted_email"));
+
+
+// Run Python Script
+If (verify_email["button"] == 1, 
+	Python Submit File("$ADDIN_HOME(com.Albertinvent.myaddin)/CombinedReports.py"));
+	
+// -------------------------------------------------	
+// Add Avg when Raw is missing: 
+
+// Reference the joined table
+dt = Current Data Table();
+
+// Edit these to match your actual column names
+colRaw  = Column(dt, "Raw Value");
+colAvg  = Column(dt, "Average Value");
+
+// Loop over rows and fill blanks
+For( r = 1, r <= N Row(dt), r++,
+    If( Is Missing( colRaw[r] ),
+        colRaw[r] = colAvg[r];
+    );
+);
+// -------------------------------------------
+// Split Horizontal Average Values: 
+
+Current Data Table() << New Script(
+	"Split Horizontal - Avg Values",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name; 
+horizontalNewName = "Horizontal Avg View " || oldName;
+
+Current Data Table() <<
+Split(
+	Split By( :Type, :"Name (Inventory, Result, Parameter)"n ),
+	Split( :Average Value ),
+	Group( :"Product / Formula ID"n, :"Product / Formula Name"n ),
+	Output Table(
+		"Horizontal View Avg Values"
+	),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+	);
+);
+
+// Split Horizontal Raw Values:
+Current Data Table() << New Script(
+	"Split Horizontal - Raw Values",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name; 
+horizontalNewName = "Horizontal Raw View " || oldName;
+
+Current Data Table() <<
+Split(
+	Split By( :Type, :"Name (Inventory, Result, Parameter)"n ),
+	Split( :Raw Value ),
+	Group( :"Product / Formula ID"n, :"Product / Formula Name"n, :Row ),
+	Output Table(
+		"Horizontal View Raw Values"
+	),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+	);
+);
+
+// Split Vertical Average Values:
+Current Data Table() << New Script(
+	"Split Vertical - Average Values",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name; 
+horizontalNewName = "Vertical Avg View " || oldName;
+
+Current Data Table() <<
+Split(
+	Split By( :"Product / Formula ID"n, :"Product / Formula Name"n ),
+	Split( :Raw Value ),
+	Group( :Type, :"Name (Inventory, Result, Parameter)"n ),
+	Output Table(
+		"Vertical View Avg Values"
+	),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+	);
+);
+
+// Convert Text to Numeric: 
+Current Data Table() << New Script(
+"Convert Strings to Numeric",
+
+	Names Default To Here(1);
+
+        /* Get a reference to the table the script is attached to */
+        dtLocal = Current Data Table();
+        tableName = dtLocal << Get Name;
+
+        /* Loop through columns and convert character columns that are purely numeric */
+        For( c = 1, c <= N Col( dtLocal ), c++,
+            col = Column( dtLocal, c );
+            canConvert = 1;
+
+            For( r = 1, r <= N Row( dtLocal ), r++,
+                val = col[r];
+                If( (val != "") & !Is Missing(val),
+                    numVal = Num( val );
+                    If( Is Missing( numVal ),
+                        canConvert = 0;
+                        Break();
+                    );
+                );
+            );
+
+            If( canConvert,
+                col << Data Type( Numeric ) << Set Modeling Type( Continuous );
+				);
+        );
+ );

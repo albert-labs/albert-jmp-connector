@@ -1,0 +1,105 @@
+// Verify Email
+email_to_confirm = Global:usr_email;
+
+verify_email = New Window( "Confirm Email Address",
+	<<Type("Modal Dialog"),
+	<<Return Result,
+	confirm = Text Edit Box( email_to_confirm ,<<Set Width(400) ),
+	H List Box(
+		Button Box ("OK"),
+		Button Box ("Cancel")
+	)
+);
+
+// Stop if Cancel is clicked
+If (verify_email["button"] != 1,
+	Show( "User Cancelled Request - Email Verification" );
+	Stop()	
+	);
+	
+If (verify_email["button"] == 1, 
+	email_confirmed = verify_email["confirm"]);
+confirmed_email = email_confirmed;
+
+PythonConnection = Python Connect();
+PythonConnection << Send(confirmed_email, Python Name("user_submitted_email"));
+
+
+// Run Python Script on OK
+If (verify_email["button"] == 1, 
+	Python Submit File("$ADDIN_HOME(com.Albertinvent.myaddin)/AllResultsReport.py"));
+	
+// Create & Add Script for Split by Result: 
+
+dtLocal = Current Data Table();
+tableName = dtLocal << get Name;
+
+Current Data Table() << New Script(
+	"Split Table by Result - Horizontal",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name; 
+horizontalNewName = "Horizontal View " || oldName;
+
+Current Data Table() <<
+Split(
+	Split By( :Data Template ID, :Result ),
+	Split( :Value ),
+	Group( :"Product / Formula ID"n, :"Product / Formula Name"n, :Parameter Groups, :Row ),
+	Output Table Name( horizontalNewName ),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+	);
+);
+
+// Script for Vertical View, split By Formula
+Current Data Table() << New Script(
+	"Split Table by Formula - Vertical",
+	
+dt_split = Current Data Table();
+oldName = dt_split << Get Name; 
+verticalNewName = "Vertical View " || oldName;
+
+Current Data Table() <<
+Split(
+	Split By( :"Product / Formula ID"n, :"Product / Formula Name"n ),
+	Split( :Value ),
+	Group( :Result, :Row ),
+	Output Table Name( verticalNewName ),
+	Remaining Columns( Drop All ),
+	Sort by Column Property
+	);
+);
+
+
+// Create & Add Script for String -> Numeric Conversion
+Current Data Table() << New Script(
+"Convert Strings to Numeric",
+
+	Names Default To Here(1);
+
+        /* Get a reference to the table the script is attached to */
+        dtLocal = Current Data Table();
+        tableName = dtLocal << Get Name;
+
+        /* Loop through columns and convert character columns that are purely numeric */
+        For( c = 1, c <= N Col( dtLocal ), c++,
+            col = Column( dtLocal, c );
+            canConvert = 1;
+
+            For( r = 1, r <= N Row( dtLocal ), r++,
+                val = col[r];
+                If( (val != "") & !Is Missing(val),
+                    numVal = Num( val );
+                    If( Is Missing( numVal ),
+                        canConvert = 0;
+                        Break();
+                    );
+                );
+            );
+
+            If( canConvert,
+                col << Data Type( Numeric ) << Set Modeling Type( Continuous );
+				);
+        );
+ );
